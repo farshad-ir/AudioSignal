@@ -261,15 +261,13 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions, in
                     String base64Chunk = Base64.encodeToString(chunk, Base64.NO_WRAP);
                     boolean isLastChunk = (i == totalChunks - 1);
 
-                    boolean isSent = sendAudioChunkToServer(base64Chunk, currentFileName, i, isLastChunk);
+                    boolean isSent = sendAudioChunkToServer(base64Chunk, currentFileName, i, isLastChunk, file);
 					if (!isSent) {
 						throw new IOException("خطا در ارسال قطعه شماره " + i);
 					}
 					
 					
-					//if (isLastChunk) {
-					//	file.delete();
-					//}
+
 
                     int percent = (int) (((i + 1) / (float) totalChunks) * 100);
                     int finalI = i;
@@ -283,7 +281,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions, in
         }).start();
     }
 
-	private boolean sendAudioChunkToServer(String base64Audio, String filename, int chunkIndex, boolean isLastChunk) {
+	private boolean sendAudioChunkToServer(String base64Audio, String filename, int chunkIndex, boolean isLastChunk, File orig) {
 		String serverUrl = PrefManager.getServerUrl(this);
 		if (serverUrl.isEmpty()) return false;
 
@@ -305,6 +303,11 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions, in
 			os.write(jsonBody.getBytes("UTF-8"));
 			os.close();
 
+
+			if (isLastChunk) {
+				orig.delete();
+			}
+			
 			int responseCode = conn.getResponseCode();
 			conn.disconnect();
 
