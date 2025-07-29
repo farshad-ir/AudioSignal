@@ -16,7 +16,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 import java.util.Random;
-
+import android.content.pm.PackageManager;
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -34,8 +34,7 @@ public class MainActivity extends Activity {
     String audioPath;
 
 	private String currentFileName;
-	private String finalAudioFileName = null;
-
+	
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -156,11 +155,55 @@ public class MainActivity extends Activity {
 
     private void toggleRecording() {
         if (!isRecording) {
-            startRecording();
+            checkPermissionAndStartRecording();
         } else {
             stopRecordingAndSend();
         }
     }
+
+
+
+
+
+
+private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
+
+private void checkPermissionAndStartRecording() {
+    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        // مجوز وجود ندارد، درخواست مجوز بده
+        requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO_PERMISSION);
+    } else {
+        // مجوز وجود دارد، شروع به ضبط کن
+        startRecording();
+    }
+}
+
+@Override
+public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+    if (requestCode == REQUEST_RECORD_AUDIO_PERMISSION) {
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            // مجوز داده شده، ضبط رو شروع کن
+            startRecording();
+        } else {
+            // مجوز داده نشده، پیام خطا یا هشدار به کاربر بده
+            txtBox.setText("مجوز ضبط صدا داده نشده است.");
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
     private void startRecording() {
         audioPath = getExternalFilesDir(Environment.DIRECTORY_MUSIC) + "/recorded_audio.3gp";
@@ -194,7 +237,6 @@ public class MainActivity extends Activity {
             txtBox.setText("در حال ارسال ویس...");
 
             File audioFile = new File(audioPath);
-			finalAudioFileName = generateFileName();
             sendAudioInChunks(audioFile);
         } catch (Exception e) {
             txtBox.setText("خطا در پایان ضبط: " + e.getMessage());
@@ -219,9 +261,15 @@ public class MainActivity extends Activity {
                     String base64Chunk = Base64.encodeToString(chunk, Base64.NO_WRAP);
                     boolean isLastChunk = (i == totalChunks - 1);
 
-                    sendAudioChunkToServer(base64Chunk, currentFileName, i, isLastChunk, file);
+                    boolean isSent = sendAudioChunkToServer(base64Chunk, currentFileName, i, isLastChunk);
+					if (!isSent) {
+						throw new IOException("خطا در ارسال قطعه شماره " + i);
+					}
 					
-
+					
+					//if (isLastChunk) {
+					//	file.delete();
+					//}
 
                     int percent = (int) (((i + 1) / (float) totalChunks) * 100);
                     int finalI = i;
@@ -235,41 +283,39 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void sendAudioChunkToServer(String base64Audio, String filename, 
-			int chunkIndex, boolean isLastChunk, File orig) {
-				
-        String serverUrl = PrefManager.getServerUrl(this);
-        if (serverUrl.isEmpty()) return;
+	private boolean sendAudioChunkToServer(String base64Audio, String filename, int chunkIndex, boolean isLastChunk) {
+		String serverUrl = PrefManager.getServerUrl(this);
+		if (serverUrl.isEmpty()) return false;
 
-        String fullUrl = serverUrl + "/upload_audio_chunk";
+		String fullUrl = serverUrl + "/upload_audio_chunk";
 
-        try {
-            URL url = new URL(fullUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
+		try {
+			URL url = new URL(fullUrl);
+			HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+			conn.setRequestMethod("POST");
+			conn.setDoOutput(true);
+			conn.setRequestProperty("Content-Type", "application/json");
 
-            String jsonBody = String.format(
-                    "{\"chunk_base64\":\"%s\", \"filename\":\"%s\", \"chunk_index\":%d, \"is_last_chunk\":%s}",
-                    base64Audio, filename, chunkIndex, isLastChunk ? "true" : "false"
-            );
+			String jsonBody = String.format(
+					"{\"chunk_base64\":\"%s\", \"filename\":\"%s\", \"chunk_index\":%d, \"is_last_chunk\":%s}",
+					base64Audio, filename, chunkIndex, isLastChunk ? "true" : "false"
+			);
 
-            OutputStream os = conn.getOutputStream();
-            os.write(jsonBody.getBytes("UTF-8"));
-            os.close();
-			
-			
-			
-			
-			//if (isLastChunk) {
-			//	orig.delete();
-			//}
+			OutputStream os = conn.getOutputStream();
+			os.write(jsonBody.getBytes("UTF-8"));
+			os.close();
 
-            conn.getResponseCode();
-            conn.disconnect();
-        } catch (Exception ignored) {}
-    }
+			int responseCode = conn.getResponseCode();
+			conn.disconnect();
+
+			return (responseCode == 200);  // فرض می‌کنیم 200 یعنی موفق
+		} catch (Exception e) {
+			// اگر می‌خواهید می‌توانید اینجا لاگ هم بگیرید
+			e.printStackTrace();
+			return false;
+		}
+	}
+
 	
 	private String generateFileName() {
 		SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault());
