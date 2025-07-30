@@ -17,6 +17,9 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.Random;
 import android.content.pm.PackageManager;
+import android.os.Handler;
+import android.os.Looper;
+import org.json.JSONObject;
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -34,6 +37,7 @@ public class MainActivity extends Activity {
     String audioPath;
 
 	private String currentFileName;
+	private String currentJobId;
 	
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -160,38 +164,148 @@ public class MainActivity extends Activity {
             stopRecordingAndSend();
         }
     }
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+
+	private Handler statusHandler = new Handler(Looper.getMainLooper());
+	private Runnable statusRunnable;
+
+	private void startPollingJobStatus() {
+		statusRunnable = new Runnable() {
+			@Override
+			public void run() {
+				if (currentJobId != null && !currentJobId.isEmpty()) {
+					pullServer_for_Status(currentJobId);
+					// دوباره این Runnable رو بعد 15 ثانیه صدا بزن
+					statusHandler.postDelayed(this, 15000);
+				} else {
+					// اگر currentJobId نال یا خالی بود، دیگر چک نکن و اجرای بعدی را متوقف کن
+					statusHandler.removeCallbacks(this);
+					runOnUiThread(() -> txtBox.append("\nPolling stopped: no current job ID."));
+				}
+			}
+		};
+
+		// شروع اولین اجرا
+		statusHandler.post(statusRunnable);
+	}
+
+	private void stopPollingJobStatus() {
+		if (statusHandler != null && statusRunnable != null) {
+			statusHandler.removeCallbacks(statusRunnable);
+		}
+	}
 
 
 
 
 
 
-private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
+	private void pullServer_for_Status(String jobID) {
+		new Thread(() -> {
+			try {
+				String serverUrl = PrefManager.getServerUrl(this);
+				if (serverUrl.isEmpty()) {
+					runOnUiThread(() -> txtBox.setText("آدرس سرور تنظیم نشده."));
+					return;
+				}
 
-private void checkPermissionAndStartRecording() {
-    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-        // مجوز وجود ندارد، درخواست مجوز بده
-        requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO_PERMISSION);
-    } else {
-        // مجوز وجود دارد، شروع به ضبط کن
-        startRecording();
-    }
-}
+				String urlStr = serverUrl + "/job_status/" + jobID;
+				URL url = new URL(urlStr);
+				HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+				conn.setRequestMethod("POST");
+				conn.setDoOutput(true);
+				conn.setRequestProperty("Content-Type", "application/json");
 
-@Override
-public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+				// چون سرور انتظار ندارد دیتایی ارسال شود، فقط کانکشن باز است و POST می‌شود بدون بادی
 
-    if (requestCode == REQUEST_RECORD_AUDIO_PERMISSION) {
-        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            // مجوز داده شده، ضبط رو شروع کن
-            startRecording();
-        } else {
-            // مجوز داده نشده، پیام خطا یا هشدار به کاربر بده
-            txtBox.setText("مجوز ضبط صدا داده نشده است.");
-        }
-    }
-}
+				int responseCode = conn.getResponseCode();
+
+				InputStream is;
+				if (responseCode >= 200 && responseCode < 300) {
+					is = conn.getInputStream();
+				} else {
+					is = conn.getErrorStream();
+				}
+
+				BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+				StringBuilder responseBuilder = new StringBuilder();
+				String line;
+				while ((line = reader.readLine()) != null) {
+					responseBuilder.append(line);
+				}
+				reader.close();
+				conn.disconnect();
+
+				String response = responseBuilder.toString();
+
+				// حالا پاسخ را در UI نمایش بدهیم
+				runOnUiThread(() -> {
+					txtBox.setText("وضعیت کار با ID " + jobID + ":\n" + response);
+				});
+
+			} catch (Exception e) {
+				e.printStackTrace();
+				runOnUiThread(() -> txtBox.setText("خطا در دریافت وضعیت:\n" + e.getMessage()));
+			}
+		}).start();
+	}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
+
+	private void checkPermissionAndStartRecording() {
+		if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+			// مجوز وجود ندارد، درخواست مجوز بده
+			requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO_PERMISSION);
+		} else {
+			// مجوز وجود دارد، شروع به ضبط کن
+			startRecording();
+		}
+	}
+
+	@Override
+	public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+		if (requestCode == REQUEST_RECORD_AUDIO_PERMISSION) {
+			if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+				// مجوز داده شده، ضبط رو شروع کن
+				startRecording();
+			} else {
+				// مجوز داده نشده، پیام خطا یا هشدار به کاربر بده
+				txtBox.setText("مجوز ضبط صدا داده نشده است.");
+			}
+		}
+	}
 
 
 
@@ -237,6 +351,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions, in
             txtBox.setText("در حال ارسال ویس...");
 
             File audioFile = new File(audioPath);
+			currentJobId = null ;
             sendAudioInChunks(audioFile);
         } catch (Exception e) {
             txtBox.setText("خطا در پایان ضبط: " + e.getMessage());
@@ -294,10 +409,13 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions, in
 			conn.setDoOutput(true);
 			conn.setRequestProperty("Content-Type", "application/json");
 
+			String jobIdToSend = (currentJobId == null || currentJobId.isEmpty()) ? "null" : "\"" + currentJobId + "\"";
+
 			String jsonBody = String.format(
-					"{\"chunk_base64\":\"%s\", \"filename\":\"%s\", \"chunk_index\":%d, \"is_last_chunk\":%s}",
-					base64Audio, filename, chunkIndex, isLastChunk ? "true" : "false"
+				"{\"chunk_base64\":\"%s\", \"filename\":\"%s\", \"chunk_index\":%d, \"is_last_chunk\":%s, \"job_id\":%s}",
+				base64Audio, filename, chunkIndex, isLastChunk ? "true" : "false", jobIdToSend
 			);
+
 
 			OutputStream os = conn.getOutputStream();
 			os.write(jsonBody.getBytes("UTF-8"));
@@ -309,9 +427,47 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions, in
 			}
 			
 			int responseCode = conn.getResponseCode();
-			conn.disconnect();
 
-			return (responseCode == 200);  // فرض می‌کنیم 200 یعنی موفق
+			// new: خواندن پاسخ سرور حتی در حالت خطا
+			InputStream is = (responseCode >= 200 && responseCode < 300) ? conn.getInputStream() : conn.getErrorStream();
+			BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+			StringBuilder responseBuilder = new StringBuilder();
+			String line;
+			while ((line = reader.readLine()) != null) {
+				responseBuilder.append(line);
+			}
+			reader.close();
+			conn.disconnect();
+			
+			
+			
+			
+			String response = responseBuilder.toString();
+
+
+			if (responseCode == 200) {
+				JSONObject jsonResponse = new JSONObject(response);
+				if (jsonResponse.has("job_id")) {
+					currentJobId = jsonResponse.getString("job_id");
+				}
+
+				return true;
+			}
+			else {
+				// new: اگر سرور مشغوله یا خطا داد، فایل اصلی را حذف کن و ارسال رو متوقف کن
+				JSONObject jsonResponse = new JSONObject(response);
+				String message = jsonResponse.optString("message", "");
+				runOnUiThread(() -> txtBox.append("\nخطا از سرور: " + message));
+				
+				orig.delete();  // new: حذف فایل در هر حالت خطا (مثل مشغول بودن)
+				return false;    // ارسال ناموفق
+			}
+
+			
+			
+			
+		
+		
 		} catch (Exception e) {
 			// اگر می‌خواهید می‌توانید اینجا لاگ هم بگیرید
 			e.printStackTrace();

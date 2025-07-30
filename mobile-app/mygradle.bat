@@ -97,7 +97,7 @@ if errorlevel 1 (
 
 :: 7. امضا با apksigner
 echo === 7. Signing APK ===
-call apksigner sign --ks ..\mykey.keystore --ks-key-alias myalias --out %APK_SIGNED% %APK_ALIGNED%
+call apksigner sign --ks ..\..\mykey.keystore --ks-key-alias myalias --out %APK_SIGNED% %APK_ALIGNED%
 if errorlevel 1 (
     echo ERROR: signing failed.
     pause

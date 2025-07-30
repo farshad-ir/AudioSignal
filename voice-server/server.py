@@ -55,14 +55,20 @@ def test_server():
     return jsonify({"status": "ok", "message": "Server is reachable"}), 200
 
 
-@app.route("/job_status/<job_id>", methods=["GET"])
+@app.route("/job_status/<job_id>", methods=["POST"])
 def job_status(job_id):
     info = status_store.get(job_id)
     if not info:
         return jsonify({"status": "not_found", "message": "Job ID not found"}), 404
-    return jsonify({"status": "ok", "job": info}), 200
 
+    # اضافه کردن زمان فعلی سرور
+    info_with_time = dict(info)
+    info_with_time["server_time"] = datetime.utcnow().isoformat()
 
+    return jsonify({"status": "ok", "job": info_with_time}), 200
+    
+    
+    
        
 @app.route("/upload_audio_chunk", methods=["POST"])
 def upload_audio_chunk():
@@ -98,6 +104,8 @@ def upload_audio_chunk():
         if not token_id:
             return jsonify({"status": "error", "message": "Invalid job ID"}), 400
 
+        # پاسخ به کلاینت برای چانک‌های بعدی
+        return jsonify({"status": "ok", "message": "Chunk received"}), 200
 
 
 
