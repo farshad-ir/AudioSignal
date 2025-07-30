@@ -30,6 +30,10 @@ fabric.properties
 /voice-server/.env
 /voice-server/.vscode/
 
+/voice-server/uploads/*
+!/voice-server/uploads/.keep
+
+
 # --- General / System ---
 .DS_Store
 Thumbs.db
