@@ -1,0 +1,39 @@
+# --- Android (mobile-app) ---
+.gradle/
+build/
+*/build/
+*.iml
+.idea/
+cmd.*
+*.hprof
+*.apk
+*.apk.idsig
+*.ap_
+*.class
+bin/
+gen/
+out/
+local.properties
+*.log
+/proguard/
+.externalNativeBuild/
+*.iws
+*.ipr
+crashlytics.properties
+fabric.properties
+
+# --- Python (voice-server) ---
+/voice-server/venv/
+/voice-server/__pycache__/
+/voice-server/*.pyc
+/voice-server/*.pyo
+/voice-server/.env
+/voice-server/.vscode/
+
+# --- General / System ---
+.DS_Store
+Thumbs.db
+
+# --- Data files (exclude all except .keep) ---
+/data/*
+!/data/.keep
