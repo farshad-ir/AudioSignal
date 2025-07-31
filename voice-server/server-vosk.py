@@ -9,6 +9,12 @@ import subprocess
 from vosk import Model, KaldiRecognizer
 import wave
 import json
+import difflib
+
+from dotenv import load_dotenv
+import openai
+
+openai.api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
 
 
 app = Flask(__name__)
@@ -22,6 +28,88 @@ active_tokens = {}  # token_id -> job_id
 status_store = {}   # job_id -> status dict
 
 
+
+
+
+
+def merge_transcripts(limited_text, free_text, vocab):
+    limited_words = limited_text.strip().split()
+    free_words = free_text.strip().split()
+    merged_words = []
+    
+    system_prompt = "شما یک ویرایشگر هوشمند فارسی هستید که می‌خواهید از دو نسخه‌ی ترنسکریپت، یک نسخه‌ی نهایی و دقیق بسازید."
+    
+    user_prompt = f"""
+شما دو نسخه ترنسکریپت صوتی دارید:
+
+نسخه با واژگان محدود (ممکن است ناقص باشد):
+\"\"\"{limited_text}\"\"\"
+
+نسخه آزاد (ممکن است اشتباهاتی داشته باشد):
+\"\"\"{free_text}\"\"\"
+
+واژگان پیشنهادی برای دقت بیشتر:
+{', '.join(vocab)}
+
+لطفاً یک نسخه نهایی، اصلاح‌شده، روان و دقیق تولید کنید که از هر دو استفاده کرده باشد و معنی را منتقل کند.
+"""
+
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.4,
+        max_tokens=1000
+    )
+    
+    final_text = response['choices'][0]['message']['content'].strip()
+    
+    merged_words = final_text.split()
+    return " ".join(merged_words)
+
+
+def merge_transcripts(limited_text, free_text, vocab):
+    limited_words = limited_text.strip().split()
+    free_words = free_text.strip().split()
+    merged_words = []
+
+    for word in free_words:
+        if word in vocab:
+            merged_words.append(word)
+        else:
+            matches = difflib.get_close_matches(word, limited_words, n=1, cutoff=0.8)
+            if matches:
+                merged_words.append(matches[0])
+            else:
+                merged_words.append(word)
+
+    return " ".join(merged_words)
+                    
+                    
+def transcribe_with_vosk(wav_path, model_path, grammar=None):
+    wf = wave.open(wav_path, "rb")
+    if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE":
+        raise ValueError("Audio file must be WAV mono PCM.")
+    
+    model = Model(model_path)
+    rec = KaldiRecognizer(model, wf.getframerate(), grammar) if grammar else KaldiRecognizer(model, wf.getframerate())
+    rec.SetWords(True)
+
+    result_text = ""
+    while True:
+        data = wf.readframes(4000)
+        if len(data) == 0:
+            break
+        if rec.AcceptWaveform(data):
+            res = json.loads(rec.Result())
+            result_text += res.get("text", "") + " "
+    res = json.loads(rec.FinalResult())
+    result_text += res.get("text", "")
+    wf.close()
+    
+    return result_text.strip()
 
 
 def acquire_token(job_id):
@@ -178,6 +266,14 @@ def upload_audio_chunk():
                     output_path = os.path.join("processed", output_filename)
                     os.makedirs("processed", exist_ok=True)
                     
+
+
+
+
+
+
+
+                    
                     status_store[job_id]["status"] = "converting wav"
                     
                     command = [
@@ -192,70 +288,67 @@ def upload_audio_chunk():
                     #ffmpeg        
                     subprocess.run(command, check=True)
                     print(f"[✓] Converted to WAV: {output_path}")
+
+
+
+
+
                     
-                    status_store[job_id]["status"] = "transcribing farsi"
                     
-                    # اجرای ووسک
+                    # شروع اجرای ووسک 
+                    #
+                    
                     status_store[job_id]["status"] = "transcribing farsi"
 
                     # مسیر مدل فارسی vosk
                     vosk_model_path = "models/fa/vosk-model-small-fa-0.5"
-                    model = Model(vosk_model_path)
+                   
 
-                    # باز کردن فایل WAV
-                    wf = wave.open(output_path, "rb")
-                    
-                    words = [
-                        "خرید", "فروش", "یورودلار", "سطح", "بالا", "پایین", "قیمت",
-                        "تایید", "برداشت", "سود", "اول", "دوم", "سوم", 
+                    # نام مسیر ها
+                    base_name = os.path.splitext(filename)[0]
+                    transcript_dir = "transcripts"
+                    os.makedirs(transcript_dir, exist_ok=True)
+
+                    vocab_list = [
+                        "خرید", "فروش", "یورودلار", "سطح", "بالا", "پایین", "قیمت", "یورو", "دلار",
+                        "تایید", "برداشت", "سود", "اول", "دوم", "سوم", "نماد", 
                         "استاپلاس", "زیر", "بزار"
-                    ]
+                    ]    
+                    
+                    # ----------------- Phase 1: With grammar -----------------
+                    
+                    grammar = '["' + '", "'.join(vocab_list) + '"]'
+
+                    phase1_text = transcribe_with_vosk(output_path, vosk_model_path, grammar)
+                    phase1_file = os.path.join(transcript_dir, f"{base_name}_phase1.txt")
+                    with open(phase1_file, "w", encoding="utf-8") as f:
+                        f.write(phase1_text)
+                    print(f"[✓] Phase 1 done: grammar-based transcript created.")
+
+                    # ----------------- Phase 2: Free transcription -----------------
+                    phase2_text = transcribe_with_vosk(output_path, vosk_model_path, grammar=None)
+                    phase2_file = os.path.join(transcript_dir, f"{base_name}_phase2.txt")
+                    with open(phase2_file, "w", encoding="utf-8") as f:
+                        f.write(phase2_text)
+                    print(f"[✓] Phase 2 done: free transcript created.")
+
+                    # ----------------- Phase 3: Merge results -----------------
+                    final_text = merge_transcripts(phase1_text, phase2_text, vocab_list)
+                    final_file = os.path.join(transcript_dir, f"{base_name}_final.txt")
+                    with open(final_file, "w", encoding="utf-8") as f:
+                        f.write(final_text)
+                    print(f"[✓] Phase 3 done: final transcript merged.")
+
+                    # ذخیره در job status
+                    status_store[job_id]["status"] = "done"
+                    status_store[job_id]["transcript"] = final_text
+
+                    
+
 
                     
                     
-                    # تبدیل لیست به JSON string
-                    limited_vocab = json.dumps(words, ensure_ascii=False)
-                    
-                    rec = KaldiRecognizer(model, wf.getframerate())
-                    # recognizer با واژگان محدود
-                    # rec = KaldiRecognizer(model, wf.getframerate(), limited_vocab)
 
-                    transcribed_text = ""
-                    while True:
-                        data = wf.readframes(4000)
-                        if len(data) == 0:
-                            break
-                        if rec.AcceptWaveform(data):
-                            result = json.loads(rec.Result())
-                            transcribed_text += result.get("text", "") + " "
-                    # نتیجه نهایی (برای کلمات باقی‌مانده در انتها)
-                    final_result = json.loads(rec.FinalResult())
-                    transcribed_text += final_result.get("text", "")
-
-                    wf.close()
-
-                    # چاپ وضعیت
-                    print(f"[✓] Vosk done for job {job_id}")
-
-
-                    # مسیر ذخیره ترنسکریپت
-                    os.makedirs("transcripts", exist_ok=True)
-                    transcript_path = os.path.join("transcripts", base_name + ".txt")
-
-                    # ذخیره فایل متنی
-                    with open(transcript_path, "w", encoding="utf-8") as f:
-                        f.write(transcribed_text.strip())
-
-                    # خواندن و قرار دادن در status_store
-                    if os.path.exists(transcript_path):
-                        with open(transcript_path, "r", encoding="utf-8") as f:
-                            transcript_text = f.read()
-
-                        status_store[job_id]["status"] = "done"
-                        status_store[job_id]["transcript"] = transcript_text
-                    else:
-                        status_store[job_id]["status"] = "error"
-                        status_store[job_id]["error"] = "Transcript file not found"
 
 
 
