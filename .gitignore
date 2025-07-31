@@ -33,6 +33,13 @@ fabric.properties
 /voice-server/uploads/*
 !/voice-server/uploads/.keep
 
+# --- خروجی‌های بیلد اندروید ---
+/mobile-app/out_dex/
+
+# --- فولدرهای موقتی سرور ---
+/voice-server/logs/
+/voice-server/processed/
+/voice-server/transcripts/
 
 # --- General / System ---
 .DS_Store

@@ -4,6 +4,8 @@ import os
 import uuid
 from datetime import datetime
 import threading
+import subprocess
+
 
 
 app = Flask(__name__)
@@ -12,7 +14,7 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-MAX_TOKENS = 5
+MAX_TOKENS = 8
 active_tokens = {}  # token_id -> job_id
 status_store = {}   # job_id -> status dict
 
@@ -36,6 +38,46 @@ def update_status(job_id, status, extra=None):
     if extra:
         status_store[job_id].update(extra)
 
+@app.route("/kill_job/<job_id>", methods=["POST"])
+def kill_job(job_id):
+    # پیدا کردن توکن مرتبط با job_id
+    token_to_remove = None
+    for token, jid in active_tokens.items():
+        if jid == job_id:
+            token_to_remove = token
+            break
+
+    # آزاد کردن توکن (اگر پیدا شد)
+    if token_to_remove:
+        release_token(token_to_remove)
+
+    # پاک‌کردن وضعیت job از status_store (یا تنظیم به حالت خاص)
+    if job_id in status_store:
+        status_store[job_id]["status"] = "killed"
+        return jsonify({"status": "killed", "job_id": job_id}), 200
+    else:
+        return jsonify({"status": "not_found", "message": "Job ID not found"}), 404
+
+
+
+@app.route('/log_from_client', methods=['POST'])
+def log_from_client():
+    try:
+        log_dir = 'logs'
+        os.makedirs(log_dir, exist_ok=True)
+
+        log_text = request.get_data(as_text=True)
+        log_file = os.path.join(log_dir, 'mobile_log.txt')
+
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(log_text + '\n')
+
+        return 'ok', 200
+    except Exception as e:
+        return str(e), 500
+        
+        
+        
 
 @app.route("/upload_text", methods=["POST"])
 def upload_text():
@@ -77,14 +119,14 @@ def upload_audio_chunk():
     filename = data.get("filename")
     chunk_index = data.get("chunk_index")
     is_last_chunk = data.get("is_last_chunk")
-    
-    # 👇 اضافه کردن job_id (از موبایل میاد، یا اولین بار جنریت میشه)
     job_id = data.get("job_id")
 
     if chunk_base64 is None or filename is None or chunk_index is None or is_last_chunk is None:
         return jsonify({"status": "error", "message": "Missing parameters"}), 400
 
-    # 👇 اولین chunk؟ پس job_id بساز و token بگیر
+    new_job = False
+    
+    
     if job_id is None or chunk_index == 0:
         job_id = str(uuid.uuid4())
         token_id = acquire_token(job_id)
@@ -99,13 +141,15 @@ def upload_audio_chunk():
             "timestamp": datetime.utcnow().isoformat(),
         }
         print(f"[✓] New job started: {job_id}")
+        new_job = True
+        
+
+        
     else:
         token_id = status_store.get(job_id, {}).get("token_id")
         if not token_id:
             return jsonify({"status": "error", "message": "Invalid job ID"}), 400
 
-        # پاسخ به کلاینت برای چانک‌های بعدی
-        return jsonify({"status": "ok", "message": "Chunk received"}), 200
 
 
 
@@ -113,22 +157,102 @@ def upload_audio_chunk():
     try:
         audio_chunk = base64.b64decode(chunk_base64)
         filepath = os.path.join(UPLOAD_FOLDER, filename)
-        # به صورت append فایل را باز می‌کنیم و قطعه را اضافه می‌کنیم
         with open(filepath, "ab") as f:
             f.write(audio_chunk)
 
         print(f"[✓] Chunk {chunk_index} appended to {filepath}")
-
+        
+        # 🔹 اگر آخرین چانک است، عملیات را در ترد جداگانه انجام بده
         if is_last_chunk:
-            print(f"[✓] Received last chunk for file {filename}")
+            def process_job():
+                try:
+                    print(f"[✓] Received last chunk for file {filename}")
+                    print(f"[✓] Starting processing job: {job_id}, file: {filename}")
 
-        return jsonify({"status": "ok", "message": f"Chunk {chunk_index} received"}), 200
+                    input_path = filepath
+                    base_name = os.path.splitext(filename)[0]
+                    output_filename = base_name + ".wav"
+                    output_path = os.path.join("processed", output_filename)
+                    os.makedirs("processed", exist_ok=True)
+                    
+                    status_store[job_id]["status"] = "converting wav"
+                    
+                    command = [
+                            "ffmpeg", 
+                            "-y", 
+                            "-i", 
+                            input_path, 
+                            "-ar", "16000", "-ac", "1", 
+                            output_path
+                            ]
+                            
+                            
+                    subprocess.run(command, check=True)
+                    print(f"[✓] Converted to WAV: {output_path}")
+                    
+                    status_store[job_id]["status"] = "transcribing farsi"
+                    
+                    # اجرای ویسپر
+                    command_whisper = [
+                        "whisper", output_path,
+                        "--model", "small",
+                        "--language", "fa",
+                        "--task", "transcribe",
+                        "--output_format", "txt",
+                        "--output_dir", "transcripts",
+                        "--fp16", "False"
+                    ]
+                    subprocess.run(command_whisper, check=True)
+
+                    print(f"[✓] Whisper done for job {job_id}")
+                    
+                    # مسیر فایل ترنسکریپت
+                    transcript_path = os.path.join("transcripts", base_name + ".txt")
+
+                    # چک می‌کنیم فایل وجود دارد
+                    if os.path.exists(transcript_path):
+                        with open(transcript_path, "r", encoding="utf-8") as f:
+                            transcript_text = f.read()
+
+                        # ذخیره در وضعیت job
+                        status_store[job_id]["status"] = "done"
+                        status_store[job_id]["transcript"] = transcript_text
+                    else:
+                        status_store[job_id]["status"] = "error"
+                        status_store[job_id]["error"] = "Transcript file not found"
+                   
+
+                except Exception as e:
+                    import traceback
+                    print(f"[✗] Error during background processing: {e}")
+                    traceback.print_exc()
+
+
+
+            threading.Thread(target=process_job).start()
+
+    # 🔹 برگشت به موبایل در هر صورت
+    
+
+
+        
     except Exception as e:
-        print("[!] Error decoding or saving chunk:", e)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        print(f"[✗] Error in upload_audio_chunk: {e}")
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 
 
+    if new_job:        
+        return jsonify({
+            "status": "ok",
+            "message": f"Chunk {chunk_index} received",
+            "job_id": job_id
+        }), 200
+    else:
+        return jsonify({
+            "status": "ok", 
+            "message": "Chunk received"
+        }), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

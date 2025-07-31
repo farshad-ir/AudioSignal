@@ -17,9 +17,12 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.Random;
 import android.content.pm.PackageManager;
-import android.os.Handler;
-import android.os.Looper;
+import java.util.Timer;
+import java.util.TimerTask;
 import org.json.JSONObject;
+
+import java.util.TimeZone;
+
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -38,6 +41,10 @@ public class MainActivity extends Activity {
 
 	private String currentFileName;
 	private String currentJobId;
+	private Boolean weAreReady;
+	
+	private Timer pollingTimer;
+	private long jobStartTime;
 	
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -177,36 +184,57 @@ public class MainActivity extends Activity {
 	
 	
 	
+	
+	
+	
+	
+	
 
-	private Handler statusHandler = new Handler(Looper.getMainLooper());
-	private Runnable statusRunnable;
+	private int pollingCounter = 0;  // تعداد دفعات اجرای پولینگ
+	private final int MAX_POLLING_COUNT = 300;  // 5 دقیقه = 60 بار × 5 ثانیه
 
-	private void startPollingJobStatus() {
-		statusRunnable = new Runnable() {
+	private void startPollingJobStatusWithTimer() {
+		if (pollingTimer != null) return;  // جلوگیری از اجرای مجدد
+
+		pollingCounter = 0;
+
+		pollingTimer = new Timer();
+		pollingTimer.scheduleAtFixedRate(new TimerTask() {
 			@Override
 			public void run() {
-				if (currentJobId != null && !currentJobId.isEmpty()) {
+				pollingCounter++;
+
+
+				if (currentJobId != null && !currentJobId.isEmpty() && weAreReady) {
 					pullServer_for_Status(currentJobId);
-					// دوباره این Runnable رو بعد 15 ثانیه صدا بزن
-					statusHandler.postDelayed(this, 15000);
-				} else {
-					// اگر currentJobId نال یا خالی بود، دیگر چک نکن و اجرای بعدی را متوقف کن
-					statusHandler.removeCallbacks(this);
-					runOnUiThread(() -> txtBox.append("\nPolling stopped: no current job ID."));
+				}
+
+				if (pollingCounter >= MAX_POLLING_COUNT) {
+					stopPollingJobStatusWithTimer();
 				}
 			}
-		};
-
-		// شروع اولین اجرا
-		statusHandler.post(statusRunnable);
+		}, 0, 10000);  // اجرا هر ۵ ثانیه
 	}
 
-	private void stopPollingJobStatus() {
-		if (statusHandler != null && statusRunnable != null) {
-			statusHandler.removeCallbacks(statusRunnable);
+	private void stopPollingJobStatusWithTimer() {
+		if (pollingTimer != null) {
+			pollingTimer.cancel();
+			pollingTimer = null;
+			sendClientLog("Polling Timer stopped.");
 		}
 	}
 
+
+
+	
+	
+	
+	
+	
+	
+	
+	
+	
 
 
 
@@ -239,7 +267,7 @@ public class MainActivity extends Activity {
 					is = conn.getErrorStream();
 				}
 
-				BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+				BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"));
 				StringBuilder responseBuilder = new StringBuilder();
 				String line;
 				while ((line = reader.readLine()) != null) {
@@ -250,10 +278,70 @@ public class MainActivity extends Activity {
 
 				String response = responseBuilder.toString();
 
-				// حالا پاسخ را در UI نمایش بدهیم
-				runOnUiThread(() -> {
-					txtBox.setText("وضعیت کار با ID " + jobID + ":\n" + response);
-				});
+
+				// 2. پردازش پاسخ JSON
+				JSONObject json = new JSONObject(response);
+				if (!json.optString("status").equals("ok")) {
+					runOnUiThread(() -> txtBox.setText("پاسخ نامعتبر از سرور"));
+					return;
+				}
+
+				JSONObject job = json.getJSONObject("job");
+				String jobStatus = job.optString("status", "نامشخص");
+				String serverTimeStr = job.optString("server_time", null);
+
+				// محاسبه اختلاف زمان
+				long elapsedSeconds = (System.currentTimeMillis() - jobStartTime) / 1000;
+
+
+				// ساخت پیام برای نمایش
+				StringBuilder msg = new StringBuilder();
+				msg.append("وضعیت: ").append(jobStatus);
+				if (elapsedSeconds >= 0 && elapsedSeconds < 20000) {
+					msg.append("\nزمان سپری شده: ").append(elapsedSeconds).append(" ثانیه");
+				}
+
+				// اگر پیاده‌سازی کامل شده:
+				if ("done".equalsIgnoreCase(jobStatus)) {
+					String transcript = job.optString("transcript", "متنی یافت نشد.");
+					msg.append("\n\n--- متن پیاده‌شده ---\n").append(transcript);
+
+					// متوقف کردن پولینگ
+					stopPollingJobStatusWithTimer();
+					sendClientLog("Polling Timer stopped by Server"); 
+					jobStartTime = 0;
+					
+					// درخواست kill job
+					new Thread(() -> {
+						try {
+							String killUrl = serverUrl + "/kill_job/" + jobID;
+							HttpURLConnection killConn = (HttpURLConnection) new URL(killUrl).openConnection();
+							killConn.setRequestMethod("POST");
+							killConn.setDoOutput(true);
+							killConn.getResponseCode(); // فقط ارسال
+							killConn.disconnect();
+						} catch (Exception ignored) {}
+					}).start();
+				}
+
+				// نمایش در UI
+				runOnUiThread(() -> txtBox.setText(msg.toString()));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 			} catch (Exception e) {
 				e.printStackTrace();
@@ -351,8 +439,10 @@ public class MainActivity extends Activity {
             txtBox.setText("در حال ارسال ویس...");
 
             File audioFile = new File(audioPath);
-			currentJobId = null ;
-            sendAudioInChunks(audioFile);
+			weAreReady 		= false ;
+			currentJobId 	= null ;
+            
+			sendAudioInChunks(audioFile);
         } catch (Exception e) {
             txtBox.setText("خطا در پایان ضبط: " + e.getMessage());
         }
@@ -362,7 +452,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 byte[] fullData = readFileToByteArray(file);
-                int chunkSize = 500 * 1024;
+                int chunkSize = 500 * 1024 ;
                 int totalChunks = (int) Math.ceil(fullData.length / (double) chunkSize);
 				
 				currentFileName = generateFileName();
@@ -390,6 +480,14 @@ public class MainActivity extends Activity {
                 }
 
                 runOnUiThread(() -> txtBox.append("\nهمه قطعات ارسال شدند."));
+				weAreReady = true ;
+				
+				//new Thread(() -> sendClientLog("We want to Start WeAReReady, was it successfull?")).start();
+				jobStartTime = System.currentTimeMillis();
+				
+				startPollingJobStatusWithTimer();
+				
+				
             } catch (Exception e) {
                 runOnUiThread(() -> txtBox.setText("خطا در ارسال ویس:\n" + e.getMessage()));
             }
@@ -422,6 +520,8 @@ public class MainActivity extends Activity {
 			os.close();
 
 
+
+
 			if (isLastChunk) {
 				orig.delete();
 			}
@@ -450,6 +550,7 @@ public class MainActivity extends Activity {
 				if (jsonResponse.has("job_id")) {
 					currentJobId = jsonResponse.getString("job_id");
 				}
+				//sendClientLog("Good or BAD", false);
 
 				return true;
 			}
@@ -460,10 +561,11 @@ public class MainActivity extends Activity {
 				runOnUiThread(() -> txtBox.append("\nخطا از سرور: " + message));
 				
 				orig.delete();  // new: حذف فایل در هر حالت خطا (مثل مشغول بودن)
+
+				//sendClientLog(chunkIndex, currentJobId, responseCode, response);
+
 				return false;    // ارسال ناموفق
 			}
-
-			
 			
 			
 		
@@ -494,4 +596,50 @@ public class MainActivity extends Activity {
         fis.close();
         return bos.toByteArray();
     }
+	
+	private void sendClientLog(String message) {
+		try {
+			String logText = "[ClientLog] time=" + System.currentTimeMillis()
+				+ ", thread=" + Thread.currentThread().getName()
+				+ ", job_id=" + currentJobId
+				+ ", weAreReady=" + weAreReady
+				+ ", message=" + message;
+
+			URL logUrl = new URL(PrefManager.getServerUrl(this) + "/log_from_client");
+			HttpURLConnection logConn = (HttpURLConnection) logUrl.openConnection();
+			logConn.setRequestMethod("POST");
+			logConn.setDoOutput(true);
+			logConn.setRequestProperty("Content-Type", "text/plain");
+
+			OutputStream osLog = logConn.getOutputStream();
+			osLog.write(logText.getBytes("UTF-8"));
+			osLog.close();
+
+			logConn.getResponseCode(); // دریافت و رد پاسخ
+			logConn.disconnect();
+		} catch (Exception e) {
+			// چون Logcat نداری، باید حتی خطاها رو هم بفرستی
+			try {
+				URL logUrl = new URL(PrefManager.getServerUrl(this) + "/log_from_client");
+				HttpURLConnection logConn = (HttpURLConnection) logUrl.openConnection();
+				logConn.setRequestMethod("POST");
+				logConn.setDoOutput(true);
+				logConn.setRequestProperty("Content-Type", "text/plain");
+
+				String errorText = "[ClientLogError] time=" + System.currentTimeMillis()
+					+ ", message=" + e.getMessage();
+
+				OutputStream osLog = logConn.getOutputStream();
+				osLog.write(errorText.getBytes("UTF-8"));
+				osLog.close();
+
+				logConn.getResponseCode();
+				logConn.disconnect();
+			} catch (Exception ignored) {}
+		}
+	}
+
+
+	
+	
 }
