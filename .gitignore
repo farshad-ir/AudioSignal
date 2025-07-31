@@ -40,6 +40,7 @@ fabric.properties
 /voice-server/logs/
 /voice-server/processed/
 /voice-server/transcripts/
+voice-server/models/
 
 # --- General / System ---
 .DS_Store
